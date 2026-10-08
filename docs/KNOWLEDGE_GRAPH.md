@@ -15,11 +15,12 @@ flowchart TD
     A -->|jd_text| C[classical_extractor.py<br/>extract_skills_classical]
     A -->|jd_text| L[llm_extractor.py<br/>extract_skills_llm]
 
-    S[(skills_list.py<br/>SKILLS dict)] --> C
-    C --> T[spaCy tokenizer] --> M[PhraseMatcher<br/>attr=LOWER] --> CR[Grouped skills:<br/>Technical / Soft / Tools]
+    S[(skills_list.py<br/>SKILLS + SKILL_ALIASES)] --> C
+    S --> CL
+    C --> AB[remove_about_section<br/>skip 'About the company'] --> T[spaCy tokenizer] --> M[PhraseMatcher<br/>attr=LOWER] --> CR[Grouped skills:<br/>Technical / Soft / Tools]
 
     E[(.env<br/>GROQ_API_KEY)] --> L
-    L --> G[Groq API<br/>JSON mode] --> P[parse_llm_json<br/>try/except] --> LR[technical_skills, soft_skills,<br/>tools, experience_requirements]
+    L --> G[Groq API<br/>structured outputs] --> P[parse_llm_json<br/>try/except] --> CL[skill_cleanup.py<br/>long phrases, aliases,<br/>categories, dedupe] --> LR[technical_skills, soft_skills,<br/>tools, experience_requirements]
     L -.->|missing key / API error / bad JSON| ERR[/LLMExtractionError shown in LLM column/]
 
     CR --> COL1[Left column: Classical spaCy]
@@ -60,7 +61,8 @@ flowchart LR
     LLM --> TEMP[temperature=0<br/>more consistent]
 
     PM --> OUT[Grouped skills]
-    VAL --> OUT
+    VAL --> CLEAN[Cleanup rules<br/>aliases, categories from skills_list, dedupe] --> OUT
+    PM --> ABOUT[Heading detection<br/>skip company section]
     OUT --> SET[Python sets<br/>difference and intersection]
     SET --> CMP[Comparison]
 
@@ -84,6 +86,8 @@ flowchart TD
     CE --> SL[skills_list.py]
     CE --> SP[(spacy)]
 
+    LE --> SC[skill_cleanup.py]
+    SC --> SL
     LE --> GR[(groq)]
     LE --> DE[(python-dotenv)]
     LE --> JS[(json, os<br/>standard library)]
@@ -94,6 +98,6 @@ flowchart TD
 ```
 
 Notes:
-- `skills_list.py` imports nothing, because it is pure data.
+- `skills_list.py` imports nothing, because it is pure data. Both `classical_extractor.py` and `skill_cleanup.py` read it, so there is one source of truth for skills and tools.
 - `classical_extractor.py` and `llm_extractor.py` don't know about each other or about Streamlit. They can be tested or reused on their own.
 - Only `app.py` knows about the UI. This is called **separation of concerns**.

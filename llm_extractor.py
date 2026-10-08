@@ -6,7 +6,8 @@ Extracts skills from a job description using an LLM through the Groq API.
 How it works, in short:
 1. Read the API key from the .env file (never hardcoded in the code).
 2. Send the job description to the model with clear instructions.
-3. Ask for JSON output (JSON mode), then parse it safely.
+3. Ask for JSON that matches a schema (structured outputs), then parse it safely.
+4. Clean the result with skill_cleanup.py (long phrases, aliases, tools, duplicates).
 """
 
 import json
@@ -14,6 +15,8 @@ import os
 
 from dotenv import load_dotenv
 from groq import BadRequestError, Groq
+
+from skill_cleanup import clean_llm_skills
 
 # Read variables from the .env file into the environment (os.environ).
 # This runs once, when the file is imported, so it happens before
@@ -55,43 +58,68 @@ RESPONSE_FORMAT = {
 }
 
 # The "system" message sets the rules for the model.
-# It has 3 parts: the task, the formatting rules, and one worked example
-# (a "few-shot" example) that shows the model exactly what we want.
+# It has 4 parts: the task, what to include, what to EXCLUDE, and one worked
+# example (a "few-shot" example) that shows both an include and an exclude.
 SYSTEM_PROMPT = """You are a precise information extraction assistant.
-Read the job description and extract ONLY skills that are explicitly mentioned in it.
+Read the job description and extract the skills a candidate needs to have, or would benefit
+from having, for this job. Only extract skills that are explicitly mentioned in the text.
 Never invent, guess, or add skills that are not written in the text.
 
 Return a JSON object with exactly these keys:
-- "technical_skills": techniques, concepts and methods (e.g. python, sql, joins, window functions,
-  query optimization, data pipelines, dashboards, a/b testing, machine learning, statistics)
-- "soft_skills": interpersonal abilities (e.g. communication, teamwork, stakeholder management)
+- "technical_skills": techniques, concepts and methods a person can learn and practise
+  (e.g. python, sql, joins, window functions, query optimization, data pipelines, dashboards,
+  a/b testing, forecasting, machine learning, statistics)
+- "soft_skills": interpersonal and work-style abilities
+  (e.g. communication, teamwork, stakeholder management, attention to detail, problem solving)
 - "tools": named software, platforms, libraries or cloud services (e.g. excel, power bi, pandas, aws)
 - "experience_requirements": years of experience, degrees or certifications, as short phrases
   (e.g. "4+ years in data analysis", "bachelor's degree in statistics")
 
-Rules for technical_skills, soft_skills and tools:
-1. Atomic skills: each item is ONE skill of 1-3 words. Split combined phrases into separate items.
-2. Include techniques and concepts, not just tool names. If the JD says "write SQL with joins and
-   window functions", extract "sql", "joins" and "window functions".
-3. Standard names: use the common, plain name in lowercase. Drop filler words such as "strong",
-   "excellent", "expert-level", "skills", "experience with". Write "machine learning", not
-   "ML-based modelling skills".
-4. Put each item in exactly ONE category, and list each item only once. Anything with a product,
-   library or brand name (pandas, docker, aws, airflow) goes ONLY in "tools". "technical_skills" is
-   only for general techniques and concepts. Exception: programming and query languages (python,
-   sql, r) go in "technical_skills".
-5. Read the WHOLE text, including "nice to have" sections and lists inside parentheses or joined
+INCLUDE (in technical_skills, soft_skills and tools):
+1. Atomic skills: EVERY item in these 3 lists (soft skills too) is ONE skill name of 1-3 words,
+   never a sentence or a duty. Split combined phrases into separate items. When the JD describes
+   a soft skill in a long phrase, write the short skill name it describes:
+   "connecting quantitative analysis with business decisions" -> "business acumen";
+   "working with incomplete, messy information" -> "ambiguity handling";
+   "explaining results to non-technical people" -> "communication".
+2. Concrete techniques and concepts, not just tool names. If the JD says "write SQL with joins and
+   window functions" or "build dashboards", extract "sql", "joins", "window functions", "dashboards".
+3. Read the WHOLE text, including "nice to have" sections and lists inside parentheses or joined
    by "or" (e.g. "aws, azure or gcp" gives "aws", "azure", "gcp").
-6. If nothing fits a key, return an empty list for it.
+
+EXCLUDE (these are NOT skills, never list them):
+- Business domains, industries and business models: saas, b2b, fintech, e-commerce, collections,
+  "technology businesses", "financial services".
+- Company descriptions, the company's own product names, team names and locations.
+- Job duties or vague words that are not a learnable skill on their own: comparison, reports,
+  insights, "work with stakeholders", "support the team", and bare umbrella words like "ai",
+  "technology" or "data" (but keep specific ones like "machine learning" or "generative ai").
+
+CATEGORIES AND NAMES:
+4. Each item goes in exactly ONE category. Soft skills NEVER go in technical_skills. Anything with
+   a product, library or brand name (pandas, docker, aws, airflow) goes ONLY in "tools".
+   Programming and query languages (python, sql, r) go in "technical_skills".
+5. Standard names in lowercase. Drop filler words such as "strong", "excellent", "expert-level",
+   "skills", "experience with".
+6. Merge near-duplicates into ONE standard name: plural/singular and word-form variants of the
+   same skill become one item ("forecasts" + "forecasting" -> "forecasting";
+   "structured analyses" + "structured analysis" -> "structured analysis";
+   "dashboarding" + "dashboards" -> "dashboards").
+7. If nothing fits a key, return an empty list for it.
 
 Example (only to show the format; never copy these skills unless they appear in the JD):
-JD text: "Strong stakeholder management and communication skills. Expert in SQL (joins, CTEs)
-and building Tableau dashboards. 3+ years of experience."
+JD text: "Join our fast-growing B2B SaaS company. You will build Tableau dashboards, compare
+monthly forecasts with actuals, and improve our forecasting models. Strong SQL (joins, CTEs),
+stakeholder management and communication skills, and attention to detail. You are comfortable
+working with incomplete, messy information. 3+ years of experience."
 Output:
-{"technical_skills": ["sql", "joins", "ctes", "dashboards"],
- "soft_skills": ["stakeholder management", "communication"],
+{"technical_skills": ["sql", "joins", "ctes", "dashboards", "forecasting"],
+ "soft_skills": ["stakeholder management", "communication", "attention to detail", "ambiguity handling"],
  "tools": ["tableau"],
- "experience_requirements": ["3+ years of experience"]}"""
+ "experience_requirements": ["3+ years of experience"]}
+Left out on purpose: "b2b" and "saas" (business model, not a skill), "compare" (a duty, not a
+skill), "forecasts" (merged into "forecasting"). The long phrase "working with incomplete, messy
+information" became the short skill name "ambiguity handling"."""
 
 
 class LLMExtractionError(Exception):
@@ -141,7 +169,8 @@ def extract_skills_llm(text: str) -> dict[str, list[str]]:
 
     Input:  the job description as a string.
     Output: {"technical_skills": [...], "soft_skills": [...],
-             "tools": [...], "experience_requirements": [...]}
+             "tools": [...], "experience_requirements": [...],
+             "removed_phrases": [...]}   <- long phrases dropped by skill_cleanup.py
     Raises LLMExtractionError with a friendly message if anything goes wrong.
     """
     client = get_client()
@@ -179,7 +208,8 @@ def extract_skills_llm(text: str) -> dict[str, list[str]]:
 
         raw_text = response.choices[0].message.content or ""
         try:
-            return parse_llm_json(raw_text)
+            # Parse the JSON, then fix the model's common slips with plain Python rules.
+            return clean_llm_skills(parse_llm_json(raw_text))
         except LLMExtractionError:
             # The reply arrived but was not usable JSON: retry once.
             if not is_last_attempt:

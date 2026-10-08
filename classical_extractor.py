@@ -57,16 +57,106 @@ for skills in SKILLS.values():
         CANONICAL_NAMES.setdefault(normalize(skill), skill)
 
 
+# "About ..." headings that describe the JOB, not the company. These are kept.
+ABOUT_THE_JOB = ("the role", "this role", "the job", "this job", "the position",
+                 "the opportunity", "you", "the team")
+
+# Other headings that introduce a company description.
+COMPANY_HEADINGS = ("who we are", "company overview", "our company", "our story")
+
+
+def heading_text(line: str) -> str:
+    """Clean a line so headings are easy to compare: "## About Us:" -> "about us"."""
+    return line.strip().strip("#*_ ").rstrip(":").strip().lower()
+
+
+def is_heading(line: str) -> bool:
+    """Guess whether a line is a section heading.
+
+    A heading is short (1-6 words), isn't a bullet point, and doesn't end
+    like a sentence. Examples: "Responsibilities", "What you'll do:", "About Us".
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped[0] in "-•*" and not stripped.startswith("**"):   # bullet, not **bold**
+        return False
+    if stripped.endswith((".", ",", ";")):
+        return False
+    return 1 <= len(heading_text(line).split()) <= 6
+
+
+def is_company_heading(line: str) -> bool:
+    """True for "About Us", "About the company", "About KiteFishAI", "Who we are"...
+
+    Also matches the inline form "About the company: We are a...".
+    "About the role" and "About you" are NOT company headings (see ABOUT_THE_JOB).
+    """
+    # "About the company: We are..." -> title "about the company", inline text "We are..."
+    before_colon, _, inline_text = line.partition(":")
+    if not inline_text.strip() and not is_heading(line):
+        return False                 # a normal sentence, e.g. "About 50% of the role is SQL."
+    title = heading_text(before_colon)
+    if len(title.split()) > 6:
+        return False                 # too long to be a heading
+    if title.startswith("about "):
+        return not title.removeprefix("about ").startswith(ABOUT_THE_JOB)
+    return title in COMPANY_HEADINGS
+
+
+def remove_about_section(text: str) -> tuple[str, str]:
+    """Remove the "About the company" section, if the JD has one.
+
+    Returns (text_to_search, removed_text).
+
+    Rules (simple on purpose):
+    - The section starts at a company heading (see is_company_heading).
+    - It ends at the next heading, e.g. "Responsibilities".
+    - If no heading follows, only the first paragraph (up to a blank line)
+      is removed, so we never accidentally throw away the whole JD.
+    """
+    lines = text.splitlines()
+    for start, line in enumerate(lines):
+        if not is_company_heading(line):
+            continue
+
+        # Find where the section ends.
+        end = None
+        for i in range(start + 1, len(lines)):
+            if is_heading(lines[i]):
+                end = i
+                break
+        if end is None:
+            # No heading after it: remove only the first paragraph.
+            end = start + 1
+            has_inline_text = bool(line.partition(":")[2].strip())
+            if not has_inline_text:
+                # Stand-alone heading: skip blank lines to reach its paragraph.
+                while end < len(lines) and not lines[end].strip():
+                    end += 1
+            while end < len(lines) and lines[end].strip():   # the paragraph itself
+                end += 1
+
+        kept = lines[:start] + lines[end:]
+        removed = lines[start:end]
+        return "\n".join(kept), "\n".join(removed)
+
+    return text, ""   # no company section found
+
+
 def extract_skills_classical(text: str) -> dict[str, list[str]]:
     """Find known skills in `text` and group them by category.
 
     Input:  the job description as a string.
     Output: {"Technical Skills": [...], "Soft Skills": [...], "Tools": [...]}
             Each list is sorted and has no duplicates.
+    The "About the company" section is skipped, because tools the company
+    uses or sells are not requirements for the candidate.
     """
     # Start with an empty set for every category (sets remove duplicates).
     results: dict[str, set[str]] = {category: set() for category in SKILLS}
 
+    text, _removed = remove_about_section(text)
     doc = nlp(text)
 
     # Each match is (match_id, start_token, end_token).

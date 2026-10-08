@@ -100,3 +100,73 @@ SKILLS: dict[str, list[str]] = {
         "Jira",
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# SKILL_ALIASES: different ways of writing the SAME skill -> one standard name.
+#
+# The LLM sometimes writes "forecasts" in one place and "forecasting" in
+# another. skill_cleanup.py looks up every LLM skill here and replaces it with
+# the standard name, so duplicates collapse into one item.
+# Keys are lowercase. Plurals are handled automatically, so "forecast" also
+# covers "forecasts", and "dashboard" also covers "dashboards".
+# Standard names match the spellings in SKILLS where possible, so the
+# spaCy vs LLM comparison lines up.
+# ---------------------------------------------------------------------------
+SKILL_ALIASES: dict[str, str] = {
+    # forecasting
+    "forecast": "forecasting",
+    "forecast modeling": "forecasting",
+    "forecasting model": "forecasting",
+    # statistical modeling
+    "statistical model": "statistical modeling",
+    "statistical modelling": "statistical modeling",
+    # dashboards
+    "dashboard": "dashboards",
+    "dashboarding": "dashboards",
+    "dashboard building": "dashboards",
+    "dashboard development": "dashboards",
+    "dashboard design": "dashboards",
+    # data visualization
+    "data visualisation": "data visualization",
+    "visualization": "data visualization",
+    "visualisation": "data visualization",
+    # data pipelines
+    "data pipeline": "data pipelines",
+    "pipeline": "data pipelines",
+    # a/b testing
+    "a/b test": "A/B testing",
+    "ab test": "A/B testing",
+    "ab testing": "A/B testing",
+    "split testing": "A/B testing",
+    # predictive modeling
+    "predictive model": "predictive modeling",
+    "predictive modelling": "predictive modeling",
+    # exploratory data analysis
+    "eda": "exploratory data analysis",
+    "exploratory analysis": "exploratory data analysis",
+    # data cleaning
+    "data cleansing": "data cleaning",
+    # query optimization
+    "query performance tuning": "query optimization",
+    "sql optimization": "query optimization",
+    "sql performance tuning": "query optimization",
+    # AI / LLMs
+    "llm": "large language models",
+    "large language model": "large language models",
+    "genai": "generative AI",
+    "gen ai": "generative AI",
+    "retrieval augmented generation": "RAG",
+    # machine learning
+    "ml": "machine learning",
+    "machine learning model": "machine learning",
+    # storytelling
+    "data storytelling": "storytelling",
+    # tools written in different ways
+    "ms excel": "Excel",
+    "microsoft excel": "Excel",
+    "advanced excel": "Excel",
+    "powerbi": "Power BI",
+    "microsoft power bi": "Power BI",
+    "sklearn": "scikit-learn",
+}

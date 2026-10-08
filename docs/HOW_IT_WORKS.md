@@ -23,6 +23,7 @@ Here is what happens:
 1. **You paste and click.** Streamlit stores your text in the variable `jd_text`. Clicking **Extract Skills** makes `st.button(...)` return `True`.
 2. **Empty check.** If the text is empty (or only spaces), the app shows a warning and calls `st.stop()`. Nothing else runs.
 3. **Classical path (left column).** `app.py` calls `extract_skills_classical(jd_text)`:
+   - If the JD has an **"About the company"** section, it is skipped first (see fix 4 in "Cleaning up after the LLM" in section 5).
    - spaCy splits the text into tokens: `["We", "need", "a", "Data", "Analyst", "with", "strong", "SQL", ...]`.
    - The PhraseMatcher compares those tokens with every skill in `skills_list.py`.
    - Matches are grouped: Technical → `Python, SQL`; Soft → `communication`; Tools → `Power BI`.
@@ -33,6 +34,7 @@ Here is what happens:
    - If Groq says the JSON failed validation, or the reply can't be parsed, the app **automatically tries once more**.
    - The model replies with JSON text such as `{"technical_skills": ["SQL", "Python"], "tools": ["Power BI"], ...}`.
    - `json.loads` turns the text into a Python dictionary, and missing keys are filled with empty lists.
+   - `skill_cleanup.py` fixes the model's common slips with plain Python rules: it drops long phrases, merges name variants, moves tools into the tools list, and removes duplicates.
    - Unlike spaCy, it can also find `experience_requirements: ["2+ years of experience"]`.
 5. **Comparison.** Both results are flattened into **sets** of lowercase skill names. Set math finds the differences:
    - `llm_skills - spacy_skills` → found only by the LLM
@@ -48,9 +50,10 @@ If the LLM step fails (no key, no internet, bad JSON), the spaCy column **still 
 
 | File | What it does | Why it exists |
 |---|---|---|
-| `skills_list.py` | Holds a dictionary `SKILLS` with ~80 skills in 3 categories. | Keeps the **data** apart from the **logic**. To add a skill, you edit only this file. |
+| `skills_list.py` | Holds `SKILLS` (~80 skills in 3 categories) and `SKILL_ALIASES` (different spellings of the same skill → one standard name). | Keeps the **data** apart from the **logic**. To add a skill or a spelling, you edit only this file. |
 | `classical_extractor.py` | Builds a spaCy PhraseMatcher and finds skills from the list. | The "classical NLP" method: fast, free, offline, predictable. |
 | `llm_extractor.py` | Calls the Groq API, asks for JSON, and parses it safely. | The "LLM" method: understands context and finds skills that aren't in any list. |
+| `skill_cleanup.py` | Cleans the LLM's lists in 4 steps: long phrases, aliases, misplaced tools, duplicates. | The prompt works *most* of the time. These rules fix the common slips *every* time. Keeping them in their own file keeps `llm_extractor.py` about talking to Groq. |
 | `app.py` | The Streamlit web page: text box, button, columns, comparison. | The **UI layer**. It only shows things; the real work happens in the extractor files. |
 | `requirements.txt` | Lists the Python packages to install. | So anyone can run `pip install -r requirements.txt` and get the same setup. |
 | `.env.example` | A template that shows which secrets are needed. | People copy it to `.env` and add their own key. The real `.env` is never shared. |
@@ -89,6 +92,23 @@ If the LLM step fails (no key, no internet, bad JSON), the spaCy column **still 
 - **Input:** the raw text the model returned.
 - **Output:** a clean dict with all 4 expected keys, each a list of strings.
 - **Inside:** `json.loads` sits inside `try/except`. If the JSON is broken, we raise a friendly error. If a key is missing or isn't a list, we fix it.
+
+### `remove_about_section(text)` — in `classical_extractor.py`
+- **Input:** the JD as a string.
+- **Output:** `(text_to_search, removed_text)`.
+- **Inside:** It looks for a company heading ("About Us", "About the company", "About KiteFishAI", "Who we are"). It removes everything from that heading to the next heading. "About the role" and "About you" are **kept**, because they describe the job. `extract_skills_classical` calls it first, and `app.py` calls it to show which section was skipped.
+
+### `clean_llm_skills(result)` — in `skill_cleanup.py`
+- **Input:** the parsed LLM result (all 4 keys).
+- **Output:** the cleaned result, plus a new key `removed_phrases`.
+- **Inside:** It runs 5 small functions, in this order:
+  1. `drop_long_phrases`: items over 4 words are removed and kept aside in `removed_phrases`.
+  2. `apply_aliases`: every skill is looked up in `SKILL_ALIASES` (`"forecasts"` → `"forecasting"`).
+  3. `apply_known_categories`: any skill that is in `skills_list.py` is moved to the category it has there (`python` → technical skills, `tensorflow` → tools), the same category spaCy uses.
+  4. `strip_soft_suffixes`: soft skills lose a trailing "skills" (`"presentation skills"` → `"presentation"`).
+  5. `deduplicate_skills`: removes items that match after lowercasing, removing "skills", and making the last word singular.
+
+  `experience_requirements` isn't touched. See "Cleaning up after the LLM" in section 5.
 
 ### `extract_skills_llm(text)` — in `llm_extractor.py`
 - **Input:** the JD as a string.
@@ -268,6 +288,143 @@ Output:
 **Limits:**
 - With `gpt-oss-20b`, the "one category only" rule is followed inconsistently: some runs still list e.g. `pandas` under both technical skills and tools. The larger `openai/gpt-oss-120b` (set `GROQ_MODEL` in `.env`) followed every rule in our tests. This is a good lesson: **a better prompt helps, but a small model can only follow so many rules at once.**
 - Some differences from spaCy are just **naming** (`airflow` vs `apache airflow`, `rag` vs `retrieval-augmented generation`), not real misses. The exact-match comparison can't tell that these are the same skill.
+
+### Precision vs recall: fixing over-extraction
+After the "include techniques and concepts" rule, the model started **over-extracting**. On a long Business Analyst JD it returned 39 "technical skills", including:
+
+- **Non-skills:** `comparison`, `saas`, `b2b`, `technology businesses`, `ai`
+- **Near-duplicates:** `forecasts` *and* `forecasting`, `structured analyses` *and* `structured analysis`
+- **Wrong category:** `attention to detail` (a soft skill) in the technical list
+
+This is the classic trade-off between **precision** and **recall**:
+
+| | Question it answers | Bad when… | Our example |
+|---|---|---|---|
+| **Precision** | "Of what you found, how much is *actually* a skill?" | You return junk | `saas`, `b2b` and `comparison` lower precision |
+| **Recall** | "Of the real skills in the JD, how many did you find?" | You miss things | Missing `joins` or `window functions` lowers recall |
+
+A simple way to remember it: think of fishing with a net.
+- **Small net** (strict prompt): only good fish, but you miss many. **High precision, low recall.**
+- **Huge net** (loose prompt): you catch every fish, plus old boots and seaweed. **High recall, low precision.**
+
+```
+precision = correct skills found / everything found
+recall    = correct skills found / all real skills in the JD
+```
+
+Example: the JD has 20 real skills. The model returns 39 items, of which 19 are real.
+→ precision = 19/39 ≈ **49%** (half is junk), recall = 19/20 = **95%** (it almost never misses).
+Our earlier fix pushed recall up; now we need precision back **without** losing recall.
+
+**What we changed (two layers):**
+
+1. **The prompt now says what NOT to extract**, not just what to extract:
+   - Business domains, industries and business models (`saas`, `b2b`, `fintech`, `collections`)
+   - Company descriptions and the company's own product names
+   - Job duties and vague words (`comparison`, `reports`, a bare `ai`)
+   - Soft skills **never** go in `technical_skills`
+   - Merge word-form variants into one name (`forecasts` + `forecasting` → `forecasting`)
+   - Real techniques like `joins`, `window functions` and `dashboards` are **still kept**, to protect recall
+   - The few-shot example now also shows an **exclusion**: the JD text contains "B2B SaaS", and the example says *"Left out on purpose: b2b and saas (business model, not a skill)"*. Showing a "don't" works better than only describing it.
+
+2. **A Python safety net after the LLM:** `deduplicate_skills()` (now in `skill_cleanup.py`):
+   - Lowercases each skill and makes the **last word singular** where it's safe: `dashboards` → `dashboard`, `queries` → `query`, `analyses` → `analysis`.
+   - Two items with the same result count as the same skill; the first one is kept.
+   - Short words (`aws`, `css`, `sas`) and words ending in "ss" (`process`) are **not** changed, because cutting their final "s" would change their meaning.
+   - It also works **across** categories: if the same skill is in both soft skills and technical skills, soft skills wins; if it's in tools and technical skills, tools wins.
+
+   Why both layers? The **prompt** handles things that need *understanding* (`forecasts` vs `forecasting`, or "is SaaS a skill?"). The **code** handles simple, mechanical cases *100% reliably*. LLMs follow rules most of the time, and code follows them every time.
+
+**Results (live tests, 2 runs each, `gpt-oss-20b`):**
+
+| JD | Before (total skills) | After (total skills) | Duplicates after | Domain words after |
+|---|---|---|---|---|
+| 597-word Senior Data Analyst JD | 60 and 75 (unstable) | 63 and 63 (stable) | none | none |
+| Short Collections-style JD with SaaS/B2B/fintech | 16 | 17 | none | none (`ai` still slips through) |
+
+In the second JD, `saas`, `b2b`, `fintech`, `technology businesses` and `comparisons` were all left out. `forecasts` was merged into `forecasting`, and `structured analyses` became `structured analysis`, while `joins`, `window functions` and `cohort analysis` were kept. One leftover: the model still returned a bare `ai` despite the rule. No prompt is perfect, which is why we measure.
+
+### Cleaning up after the LLM: 4 code fixes
+Even with a good prompt, a long KiteFishAI-style JD still showed 4 problems. Each one got a small, **predictable** Python fix.
+
+**1. Near-duplicates → a canonical-name map (alias map)**
+The model returned both `forecasts` and `forecasting`, and both `statistical models` and `statistical modeling`. Our plural rule can't catch these, because "forecasting" isn't the plural of "forecast". So `skills_list.py` now has a small dictionary:
+
+```python
+SKILL_ALIASES = {
+    "forecast": "forecasting",                       # also covers "forecasts"
+    "statistical model": "statistical modeling",     # also covers "statistical models"
+    "dashboard building": "dashboards",
+    "ms excel": "Excel",
+    ...
+}
+```
+
+Every LLM skill is looked up in it (plural forms too), and replaced by its **standard name**. After that, the duplicate check sees two identical names and keeps one. This is called **normalization** or **canonicalization**: many spellings, one official name. The standard names match the spellings in `SKILLS`, so the spaCy vs LLM comparison lines up better.
+
+*Limit:* it only knows the variants we wrote down. A new variant needs one new line in `SKILL_ALIASES`.
+
+**2. Long soft skills → prompt rule + a 4-word check**
+The model returned sentences such as *"connecting quantitative analysis with business decisions"*. Two layers fix this:
+- **Prompt:** every item, soft skills included, must be a 1–3 word skill **name**, with examples: that phrase → `business acumen`; *"working with incomplete, messy information"* → `ambiguity handling`.
+- **Code:** `drop_long_phrases()` removes anything over **4 words**. We allow one extra word, so a real 4-word skill isn't lost. Removed phrases aren't hidden: the app lists them under the LLM column ("Removed (too long to be a skill name)"), so you can see what the rule did.
+
+**3. Wrong categories → `skills_list.py` decides**
+The model put `looker`, `tensorflow` and `pytorch` in technical skills, and sometimes `python` and `sql` in **tools**, while spaCy has them in Technical Skills. Two extractors disagreeing about categories makes the comparison confusing.
+
+`apply_known_categories()` fixes this with a **single source of truth**: every skill that is in `skills_list.py` goes into the category it has there, no matter where the model put it.
+
+```python
+KNOWN_CATEGORY = {"python": "technical_skills", "sql": "technical_skills",
+                  "tableau": "tools", "communication": "soft_skills", ...}   # built from SKILLS
+```
+
+spaCy reads `SKILLS` directly, and the LLM's answer is corrected to match it, so both columns always agree. Programming and query languages (Python, SQL, R) are in Technical Skills in `skills_list.py`, so that's where they end up. To change a skill's category for **both** extractors, you change **one line** in `skills_list.py`.
+
+*Limit:* only skills in our list are corrected. A skill we never listed (like `prophet`) stays wherever the model put it.
+
+**3b. "presentation skills" vs "presentation" → strip the word "skills"**
+spaCy's list has `presentation skills`, but the LLM often writes just `presentation`, so the comparison called them different. Now a trailing "skill"/"skills" is removed before comparing (`comparison_key()` in `skill_cleanup.py`), and `app.py` uses that **same function for both spaCy and LLM results**. Soft skills from the LLM are also renamed (`"communication skills"` → `"communication"`). A single word like "skills" is left alone, so a name never becomes empty.
+
+**Results (live, after these two fixes):** on two long JDs, 6 skills that both extractors found had **different** categories before cleanup (for example `python` in the LLM's tools, `pandas` in its technical skills). After cleanup there were **0**. A JD with "presentation skills" now shows `presentation` under "Both found" instead of once in each "only" list.
+
+**4. Skipping the "About the company" section (spaCy)**
+spaCy found `large language models` in *"KiteFishAI builds large language models…"*. That describes the **company's product**, not what the **candidate** needs. PhraseMatcher can't tell the difference: it matches words, not meaning.
+
+The fix is simple **heading detection** in `classical_extractor.py`:
+1. Find a company heading: a short line like `About Us`, `About the company`, `About KiteFishAI`, `Who we are`, or the inline form `About the company: We are…`.
+2. Remove everything from there to the **next heading**. A heading is a short line (1–6 words) that isn't a bullet and doesn't end with a full stop.
+3. Search only what's left.
+
+```
+About KiteFishAI                          <- company heading: start skipping
+KiteFishAI builds large language models…  <- skipped
+
+About the role                            <- next heading: stop skipping ("About the role" is kept)
+You will write SQL…                       <- searched
+```
+
+**Limitations (be honest about these in interviews):**
+- **It's a guess based on formatting.** If the JD is one big paragraph with no headings, nothing is skipped.
+- **A company section with no heading after it:** only its first paragraph is removed, so we never throw away the whole JD by mistake.
+- **A short line inside the company text** (like `Bengaluru, India`) looks like a heading, so skipping can stop early. Some company text then still gets searched. This fails *safe*: we may keep too much, but never remove the requirements.
+- **Company info outside that section** (e.g. "our team uses Kubernetes" inside the responsibilities) is still matched.
+- **Only spaCy skips it.** The LLM reads the whole JD, because it *can* understand context, and the prompt tells it to ignore company descriptions.
+
+**Results on a 498-word KiteFishAI-style JD** (2 live runs, identical model output both times):
+
+| | Model output | After cleanup |
+|---|---|---|
+| Technical skills | 32 | **17** |
+| Tools also listed in technical skills | 11 (looker, tensorflow, pytorch, …) | **0** |
+| Near-duplicate pairs | 15 | **0** |
+| Items over 4 words | 0 (the new prompt rule worked) | 0 |
+| spaCy skills | 31 (incl. `large language models`, `Docker` from the About section) | **29** |
+
+### Temperature and consistency
+`temperature` controls how "random" the model's word choices are. `0` means "always pick the most likely next word", so we use `temperature=0` to get **the same answer for the same JD** as often as possible.
+
+It's not a 100% guarantee: reasoning models like gpt-oss can still vary a little between calls (in our tests, the same JD once gave 43 skills and another time 40). That's another reason the cleanup is in **code**: code gives the same result every time.
 
 ### Environment variables and `.env`
 An **environment variable** is a named value stored outside your code, such as `GROQ_API_KEY=abc123`.

@@ -11,8 +11,9 @@ see spaCy results and LLM results side by side -> see a comparison.
 
 import streamlit as st
 
-from classical_extractor import extract_skills_classical, normalize
+from classical_extractor import extract_skills_classical, remove_about_section
 from llm_extractor import LLMExtractionError, extract_skills_llm
+from skill_cleanup import comparison_key
 
 # Map the LLM's JSON keys to the same category names spaCy uses,
 # so both columns look the same and are easy to compare.
@@ -34,8 +35,12 @@ def show_skill_groups(groups: dict[str, list[str]]) -> None:
 
 
 def all_skills_normalized(groups: dict[str, list[str]]) -> set[str]:
-    """Flatten all categories into one set of normalized skills, for comparing."""
-    return {normalize(skill) for skills in groups.values() for skill in skills}
+    """Flatten all categories into one set of comparison keys.
+
+    The same comparison_key() is used for spaCy and LLM results, so
+    "Presentation Skills" and "presentation" count as one skill.
+    """
+    return {comparison_key(skill) for skills in groups.values() for skill in skills}
 
 
 # ---------- Page layout ----------
@@ -60,6 +65,13 @@ if st.button("Extract Skills", type="primary"):
         classical_result = extract_skills_classical(jd_text)
         show_skill_groups(classical_result)
 
+        # Tell the user if the "About the company" section was skipped.
+        _, removed_about = remove_about_section(jd_text)
+        if removed_about:
+            first_line = removed_about.strip().splitlines()[0][:60]
+            st.caption(f"Skipped the company section starting with \"{first_line}\" "
+                       f"({len(removed_about.split())} words).")
+
     # ----- Right column: LLM -----
     llm_groups: dict[str, list[str]] | None = None
     with col_llm:
@@ -79,6 +91,11 @@ if st.button("Extract Skills", type="primary"):
                     st.write(f"- {requirement}")
             else:
                 st.caption("None found")
+
+            # Show what the cleanup step removed, so nothing disappears silently.
+            if llm_result["removed_phrases"]:
+                st.caption("Removed (too long to be a skill name): "
+                           + "; ".join(llm_result["removed_phrases"]))
         except LLMExtractionError as error:
             st.error(str(error))
 

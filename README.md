@@ -14,7 +14,8 @@ JD Skill Extractor/
 ├── app.py                  # Streamlit UI
 ├── classical_extractor.py  # spaCy PhraseMatcher logic
 ├── llm_extractor.py        # Groq API call + safe JSON parsing
-├── skills_list.py          # Hand-written skills dictionary
+├── skill_cleanup.py        # Cleans LLM output: long phrases, aliases, categories, duplicates
+├── skills_list.py          # Hand-written skills + alias map
 ├── requirements.txt        # Pinned package versions
 ├── .env.example            # Template for your API key
 └── docs/
