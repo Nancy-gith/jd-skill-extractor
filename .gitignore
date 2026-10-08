@@ -1,0 +1,9 @@
+# Secrets: never commit your real API key
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

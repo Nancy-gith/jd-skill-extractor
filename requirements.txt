@@ -1,0 +1,7 @@
+# Exact versions, tested locally with Python 3.10.
+# All four have Linux wheels for Python 3.10-3.14, so they install cleanly
+# on any Python version Streamlit Community Cloud offers.
+streamlit==1.63.0
+spacy==3.8.16
+groq==1.7.0
+python-dotenv==1.2.3
