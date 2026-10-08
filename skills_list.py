@@ -162,6 +162,11 @@ SKILL_ALIASES: dict[str, str] = {
     "machine learning model": "machine learning",
     # storytelling
     "data storytelling": "storytelling",
+    # communication
+    "written communication": "communication",
+    "verbal communication": "communication",
+    "oral communication": "communication",
+    "communication skills": "communication",
     # tools written in different ways
     "ms excel": "Excel",
     "microsoft excel": "Excel",
